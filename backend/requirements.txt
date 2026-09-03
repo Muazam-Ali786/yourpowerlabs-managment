@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pydantic
+reportlab
+pillow
+python-multipart

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>YourPower Labs</title>
+  <link rel="stylesheet" href="css/style.css"/>
+</head>
+<body>
+
+<!-- NAVBAR -->
+<nav class="navbar">
+  <a class="nav-brand" href="#">
+    <img src="assets/logo.png" class="nav-logo" alt="YPL"/>
+    YourPower Labs
+  </a>
+  <div class="nav-center">
+    <div class="month-nav">
+      <button class="btn-month" id="prevBtn">&#9664;</button>
+      <span class="month-label" id="monthLabel">—</span>
+      <button class="btn-month" id="nextBtn">&#9654;</button>
+    </div>
+  </div>
+  <div class="nav-right">
+    <div class="user-info">
+      <span id="navUser">—</span>
+      <span class="role-badge" id="navRole">—</span>
+    </div>
+    <button class="btn-nav" id="adminBtn" style="display:none" onclick="openAdmin()">⚙ Admin</button>
+    <button class="btn-nav" id="themeBtn" onclick="toggleTheme()">🌙</button>
+    <button class="btn-nav danger" onclick="doLogout()">Sign Out</button>
+  </div>
+</nav>
+
+<!-- BALANCE BAR -->
+<div class="balance-bar">
+  <div class="bal-card">
+    <div class="bal-label">This Month Budget</div>
+    <div class="bal-val accent" id="bBudget">Rs 0</div>
+  </div>
+  <div class="bal-card">
+    <div class="bal-label">Total Received</div>
+    <div class="bal-val green" id="bCredit">+ Rs 0</div>
+  </div>
+  <div class="bal-card">
+    <div class="bal-label">Total Spent</div>
+    <div class="bal-val red" id="bDebit">− Rs 0</div>
+  </div>
+  <div class="bal-card">
+    <div class="bal-label">This Month</div>
+    <div class="bal-val" id="bMonth">Rs 0</div>
+  </div>
+  <div class="bal-card">
+    <div class="bal-label">Carry Forward</div>
+    <div class="bal-val purple" id="bCarry">+ Rs 0</div>
+  </div>
+  <div class="bal-card">
+    <div class="bal-label">Total Remaining</div>
+    <div class="bal-val" id="bTotal">Rs 0</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- LEFT: TABLE -->
+  <div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Expense Records</h3>
+        <div class="filters">
+          <select class="filter-select" id="typeFilter">
+            <option value="">All Types</option>
+            <option value="debit">Debit</option>
+            <option value="credit">Credit</option>
+          </select>
+          <select class="filter-select" id="catFilter"><option value="">All Categories</option></select>
+          <input class="search-input" id="searchBox" placeholder="Search..."/>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Date</th><th>Type</th><th>Category</th>
+              <th>Description</th><th>Amount</th><th>Added By</th>
+              <th>Receipt</th><th id="delHead"></th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty" id="emptyState" style="display:none">
+          <div class="empty-icon">📭</div>
+          <p>No records this month.</p>
+        </div>
+      </div>
+      <div class="export-row">
+        <button class="btn-export" onclick="exportCSV()">↓ CSV</button>
+        <button class="btn-export" onclick="exportPDF('monthly')">📄 Monthly PDF</button>
+        <button class="btn-export" onclick="exportPDF('weekly')">📅 Weekly PDF</button>
+        <button class="btn-export" onclick="exportPDF('yearly')">📊 Yearly PDF</button>
+        <button class="btn-export" onclick="printReport()">🖨 Print</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+
+    <!-- ADD ENTRY -->
+    <div class="panel">
+      <div class="panel-head"><h3>Add Entry</h3></div>
+      <div class="panel-body">
+        <div class="type-toggle">
+          <button class="type-btn active-debit" id="btnDebit" onclick="setType('debit')">− Debit</button>
+          <button class="type-btn" id="btnCredit" onclick="setType('credit')" style="display:none">+ Credit</button>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Date</label>
+            <input type="date" id="inDate"/>
+          </div>
+          <div class="form-group">
+            <label>Amount (Rs)</label>
+            <input type="number" id="inAmount" placeholder="0" min="0"/>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Category</label>
+          <select id="inCat"></select>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea id="inDesc" placeholder="Details (optional)..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>Receipt / Bill <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+          <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+            📎 Click to attach image or PDF
+            <input type="file" id="fileInput" accept="image/*,.pdf" style="display:none" onchange="onFileSelect(event)"/>
+          </div>
+          <div class="upload-preview" id="uploadPreview">
+            <img id="previewImg" src="" alt="" style="display:none"/>
+            <span id="previewName"></span>
+            <button class="btn-clear" onclick="clearFile()">✕</button>
+          </div>
+        </div>
+        <button class="btn-add" onclick="addEntry()">Add Entry</button>
+      </div>
+    </div>
+
+    <!-- CATEGORIES -->
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Categories</h3>
+        <button class="btn-add-cat" onclick="openCatModal()">+ New</button>
+      </div>
+      <div class="panel-body" style="padding-top:8px">
+        <div class="cat-list" id="catList"></div>
+      </div>
+    </div>
+
+    <!-- BREAKDOWN -->
+    <div class="panel">
+      <div class="panel-head"><h3>This Month</h3></div>
+      <div class="panel-body" id="breakdown">
+        <p style="color:var(--muted);font-size:13px">No data this month.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ADMIN MODAL -->
+<div class="overlay" id="adminOverlay">
+  <div class="modal lg">
+    <div class="modal-head">
+      <h3>⚙ Admin Panel</h3>
+      <button class="modal-close" onclick="closeAdmin()">✕</button>
+    </div>
+    <div class="admin-tabs">
+      <button class="atab active" onclick="switchTab('users',this)">Users</button>
+      <button class="atab" onclick="switchTab('budgets',this)">Set Budgets</button>
+    </div>
+    <div class="tab-content active" id="tab-users">
+      <div class="form-row" style="margin-bottom:10px">
+        <div class="form-group"><label>Username</label><input type="text" id="nuName" placeholder="username"/></div>
+        <div class="form-group"><label>Password</label><input type="password" id="nuPass" placeholder="password"/></div>
+      </div>
+      <div class="form-row" style="margin-bottom:14px">
+        <div class="form-group">
+          <label>Role</label>
+          <select id="nuRole"><option value="user">User</option><option value="admin">Admin</option></select>
+        </div>
+        <div class="form-group" style="display:flex;align-items:flex-end">
+          <button class="btn-add" onclick="createUser()">Create User</button>
+        </div>
+      </div>
+      <div id="userList"></div>
+    </div>
+    <div class="tab-content" id="tab-budgets">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Set monthly budget per user.</p>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+        <label style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Month</label>
+        <input type="month" id="budgetMonth" style="background:var(--bg);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:7px 12px;font-size:13px;outline:none"/>
+        <button class="btn-nav" onclick="loadBudgets()">Load</button>
+      </div>
+      <div id="budgetList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- CATEGORY MODAL -->
+<div class="overlay" id="catOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>New Category</h3>
+      <button class="modal-close" onclick="closeCatModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group"><label>Name</label><input type="text" id="catName" placeholder="e.g. Marketing"/></div>
+      <div class="form-group">
+        <label>Color</label>
+        <div style="display:flex;align-items:center;gap:10px">
+          <input type="color" id="catColor" value="#cdfe2d" style="width:44px;height:36px;border:none;background:none;cursor:pointer;padding:0"/>
+          <span style="font-size:13px;color:var(--muted)">Pick a color</span>
+        </div>
+      </div>
+      <button class="btn-add" onclick="saveCategory()">Add Category</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHANGE PASSWORD MODAL -->
+<div class="overlay" id="passOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Change Password</h3>
+      <button class="modal-close" onclick="closePassModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px" id="passSubtitle">Set new password</p>
+      <input type="hidden" id="passUid"/>
+      <div class="form-group"><label>New Password</label><input type="password" id="passInput" placeholder="New password"/></div>
+      <button class="btn-add" onclick="savePassword()">Update Password</button>
+    </div>
+  </div>
+</div>
+
+<!-- LIGHTBOX -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <div class="lightbox-inner" onclick="event.stopPropagation()">
+    <img id="lbImg" src="" alt="Receipt"/>
+    <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

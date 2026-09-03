@@ -1,0 +1,282 @@
+"""YourPower Labs — PDF Export (Clean Professional Design)"""
+
+from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import StreamingResponse
+from io import BytesIO
+from datetime import datetime
+import sqlite3, os
+from typing import Optional
+
+router = APIRouter()
+MONTHS = ["January","February","March","April","May","June",
+          "July","August","September","October","November","December"]
+DB_PATH    = os.path.join(os.path.dirname(__file__), "data", "expenses.db")
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row; return conn
+
+def verify_token(authorization):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Not logged in")
+    token = authorization.split(" ")[1]
+    conn  = get_db()
+    row   = conn.execute(
+        "SELECT u.* FROM sessions s JOIN users u ON s.user_id=u.id WHERE s.token=?", (token,)).fetchone()
+    conn.close()
+    if not row: raise HTTPException(401, "Session expired")
+    return dict(row)
+
+def build_pdf(user, expenses, title, filename, budget=0):
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                        Paragraph, Spacer, HRFlowable)
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+    except ImportError as e:
+        raise HTTPException(500, f"reportlab error: {e}")
+
+    # Clean white/light colors
+    WHITE   = colors.white
+    LIGHT   = colors.HexColor("#f8fafc")
+    BORDER  = colors.HexColor("#e2e8f0")
+    HEADER_BG = colors.HexColor("#f1f5f9")
+    TEXT    = colors.HexColor("#0f172a")
+    MUTED   = colors.HexColor("#64748b")
+    GREEN   = colors.HexColor("#16a34a")
+    RED     = colors.HexColor("#dc2626")
+    ACCENT  = colors.HexColor("#1d4ed8")
+
+    styles = getSampleStyleSheet()
+    normal = ParagraphStyle("n", parent=styles["Normal"], fontName="Helvetica", fontSize=9, textColor=TEXT)
+
+    conn = get_db()
+    cat_colors = {c["name"]:c["color"] for c in conn.execute("SELECT name,color FROM categories").fetchall()}
+    conn.close()
+
+    td = sum(e["amount"] for e in expenses if e["type"]=="debit")
+    tc = sum(e["amount"] for e in expenses if e["type"]=="credit")
+    bal = budget + tc - td
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                            topMargin=16*mm, bottomMargin=14*mm,
+                            leftMargin=14*mm, rightMargin=14*mm)
+    story = []
+
+    def p(text, color=TEXT, size=9, bold=False, align=TA_LEFT):
+        style = ParagraphStyle("x", parent=styles["Normal"],
+                               fontName="Helvetica-Bold" if bold else "Helvetica",
+                               fontSize=size, textColor=color, alignment=align)
+        return Paragraph(text, style)
+
+    # ── HEADER ──
+    story.append(p("⚡ YourPower Labs — Expense Report", TEXT, 16, True))
+    story.append(Spacer(1, 2*mm))
+    story.append(p(f"{title}  |  {datetime.now().strftime('%d %b %Y, %I:%M %p')}", MUTED, 9))
+    story.append(Spacer(1, 5*mm))
+    story.append(HRFlowable(width="100%", thickness=1, color=BORDER))
+    story.append(Spacer(1, 4*mm))
+
+    # ── SUMMARY BOXES ──
+    def sbox(label, val, val_color):
+        return [p(label, MUTED, 8), Spacer(1, 2), p(val, val_color, 14, True)]
+
+    bal_color = GREEN if bal >= 0 else RED
+    sum_data = [[
+        [p("BUDGET", MUTED, 8), Spacer(1,2), p(f"Rs {budget:,.0f}", TEXT, 14, True)],
+        [p("CREDIT", MUTED, 8), Spacer(1,2), p(f"+Rs {tc:,.0f}", GREEN, 14, True)],
+        [p("DEBIT",  MUTED, 8), Spacer(1,2), p(f"-Rs {td:,.0f}", RED, 14, True)],
+        [p("BALANCE",MUTED, 8), Spacer(1,2), p(f"{'−' if bal<0 else '+'}Rs {abs(bal):,.0f}", bal_color, 14, True)],
+    ]]
+
+    # Use inner tables for each box
+    def make_box(items):
+        t = Table([[item] for item in items], colWidths=[42*mm])
+        t.setStyle(TableStyle([
+            ("BOX",(0,0),(-1,-1),1,BORDER),
+            ("BACKGROUND",(0,0),(-1,-1),WHITE),
+            ("PADDING",(0,0),(-1,-1),8),
+            ("ROUNDEDCORNERS",[4]),
+        ]))
+        return t
+
+    boxes = Table([[
+        make_box([p("BUDGET",MUTED,8), p(f"Rs {budget:,.0f}",TEXT,13,True)]),
+        make_box([p("CREDIT",MUTED,8), p(f"+Rs {tc:,.0f}",GREEN,13,True)]),
+        make_box([p("DEBIT", MUTED,8), p(f"-Rs {td:,.0f}",RED,13,True)]),
+        make_box([p("BALANCE",MUTED,8), p(f"{'−' if bal<0 else '+'}Rs {abs(bal):,.0f}",bal_color,13,True)]),
+    ]], colWidths=[44*mm]*4)
+    boxes.setStyle(TableStyle([("PADDING",(0,0),(-1,-1),3)]))
+    story.append(boxes)
+    story.append(Spacer(1,5*mm))
+
+    # ── GENERATED BY ──
+    who = "All Users" if user["role"]=="admin" else user["username"]
+    story.append(p(f"Generated by: {user['username']}   |   Report for: {who}   |   {len(expenses)} entries", MUTED, 8))
+    story.append(Spacer(1,4*mm))
+    story.append(HRFlowable(width="100%", thickness=1, color=BORDER))
+    story.append(Spacer(1,3*mm))
+
+    # ── TABLE ──
+    if not expenses:
+        story.append(p("No transactions for this period.", MUTED, 10))
+    else:
+        headers = ["#","Date","Type","Category","Description","Amount","By","Receipt"]
+        col_w   = [8*mm, 22*mm, 16*mm, 26*mm, 50*mm, 25*mm, 18*mm, 14*mm]
+
+        def hp(text):
+            return Paragraph(text, ParagraphStyle("h", parent=styles["Normal"],
+                             fontName="Helvetica-Bold", fontSize=8,
+                             textColor=MUTED, alignment=TA_LEFT))
+        def cp(text, color=TEXT, bold=False):
+            return Paragraph(text, ParagraphStyle("c", parent=styles["Normal"],
+                             fontName="Helvetica-Bold" if bold else "Helvetica",
+                             fontSize=8, textColor=color))
+
+        tdata = [[hp(h) for h in headers]]
+
+        for i, e in enumerate(expenses):
+            is_d = e["type"]=="debit"
+            ac   = RED if is_d else GREEN
+
+            # Receipt
+            rc = cp("—", MUTED)
+            rp = e.get("receipt_path","")
+            if rp:
+                ext = rp.split(".")[-1].lower()
+                fp  = os.path.join(UPLOAD_DIR, os.path.basename(rp))
+                if os.path.exists(fp) and ext in ("jpg","jpeg","png","gif","webp"):
+                    try:
+                        from reportlab.platypus import Image as RLI
+                        rc = RLI(fp, width=11*mm, height=9*mm)
+                    except: rc = cp("img", ACCENT)
+                elif ext=="pdf": rc = cp("PDF", ACCENT)
+
+            row_bg = WHITE if i%2==0 else LIGHT
+            tdata.append([
+                cp(str(i+1), MUTED),
+                cp(e["date"]),
+                cp("Debit" if is_d else "Credit", ac, True),
+                cp(e["category"]),
+                cp((e.get("description") or "—")[:50]),
+                cp(f'{"−" if is_d else "+"}Rs {e["amount"]:,.0f}', ac, True),
+                cp(e.get("added_by","—"), MUTED),
+                rc
+            ])
+
+        tbl = Table(tdata, colWidths=col_w, repeatRows=1)
+        tbl.setStyle(TableStyle([
+            # Header row
+            ("BACKGROUND",(0,0),(-1,0), HEADER_BG),
+            ("LINEBELOW",(0,0),(-1,0), 1.5, BORDER),
+            # Alternating rows
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE, LIGHT]),
+            # Grid
+            ("LINEBELOW",(0,1),(-1,-1), 0.5, BORDER),
+            ("BOX",(0,0),(-1,-1), 1, BORDER),
+            # Padding
+            ("PADDING",(0,0),(-1,-1), 6),
+            ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+            ("TOPPADDING",(0,0),(-1,0), 8),
+            ("BOTTOMPADDING",(0,0),(-1,0), 8),
+        ]))
+        story.append(tbl)
+
+    # ── CATEGORY SUMMARY ──
+    cats = {}
+    for e in expenses:
+        k = e["category"]
+        if k not in cats: cats[k] = {"debit":0,"credit":0}
+        cats[k][e["type"]] += e["amount"]
+
+    if cats:
+        story.append(Spacer(1,6*mm))
+        story.append(HRFlowable(width="100%",thickness=1,color=BORDER))
+        story.append(Spacer(1,3*mm))
+        story.append(p("Category Summary", TEXT, 11, True))
+        story.append(Spacer(1,3*mm))
+
+        cdata = [[hp(h) for h in ["Category","Debit (−)","Credit (+)","Net"]]]
+        for cat, v in sorted(cats.items(), key=lambda x: -(x[1]["debit"]+x[1]["credit"])):
+            net = v["credit"]-v["debit"]; nc = GREEN if net>=0 else RED
+            cdata.append([
+                cp(cat),
+                cp(f'Rs {v["debit"]:,.0f}', RED),
+                cp(f'Rs {v["credit"]:,.0f}', GREEN),
+                cp(f'{"+" if net>=0 else "−"}Rs {abs(net):,.0f}', nc, True)
+            ])
+        ct = Table(cdata, colWidths=[55*mm,42*mm,42*mm,42*mm])
+        ct.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),HEADER_BG),
+            ("LINEBELOW",(0,0),(-1,0),1.5,BORDER),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[WHITE,LIGHT]),
+            ("LINEBELOW",(0,1),(-1,-1),0.5,BORDER),
+            ("BOX",(0,0),(-1,-1),1,BORDER),
+            ("PADDING",(0,0),(-1,-1),6),
+        ]))
+        story.append(ct)
+
+    # ── FOOTER ──
+    story.append(Spacer(1,8*mm))
+    story.append(HRFlowable(width="100%",thickness=0.5,color=BORDER))
+    story.append(Spacer(1,2*mm))
+    story.append(p("YourPower Labs — Confidential Office Report", MUTED, 7, align=TA_CENTER))
+    story.append(Spacer(1,1*mm))
+    story.append(p("Designed & Developed by Muazam Ali", MUTED, 7, align=TA_CENTER))
+
+    doc.build(story); buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="YPL-{filename}.pdf"'})
+
+
+@router.get("/api/export/pdf/{month}")
+def export_monthly(month: str, authorization: Optional[str] = Header(None)):
+    user = verify_token(authorization)
+    conn = get_db()
+    is_admin = user["role"]=="admin"
+    if is_admin:
+        rows = conn.execute("SELECT * FROM expenses WHERE strftime('%Y-%m',date)=? ORDER BY date DESC",(month,)).fetchall()
+        budget = conn.execute("SELECT COALESCE(SUM(amount),0) FROM user_budgets WHERE month=?",(month,)).fetchone()[0]
+    else:
+        rows = conn.execute("SELECT * FROM expenses WHERE strftime('%Y-%m',date)=? AND user_id=? ORDER BY date DESC",(month,user["id"])).fetchall()
+        b = conn.execute("SELECT amount FROM user_budgets WHERE user_id=? AND month=?",(user["id"],month)).fetchone()
+        budget = b[0] if b else 0
+    conn.close()
+    yn,mn = int(month.split("-")[0]), int(month.split("-")[1])
+    return build_pdf(user, [dict(r) for r in rows], f"{MONTHS[mn-1]} {yn}", month, budget)
+
+
+@router.get("/api/export/pdf/week/{date}")
+def export_weekly(date: str, authorization: Optional[str] = Header(None)):
+    from datetime import timedelta
+    user = verify_token(authorization)
+    dt = datetime.strptime(date,"%Y-%m-%d")
+    ws = (dt-timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+    we = (dt-timedelta(days=dt.weekday())+timedelta(days=6)).strftime("%Y-%m-%d")
+    conn = get_db()
+    is_admin = user["role"]=="admin"
+    if is_admin:
+        rows = conn.execute("SELECT * FROM expenses WHERE date>=? AND date<=? ORDER BY date DESC",(ws,we)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM expenses WHERE date>=? AND date<=? AND user_id=? ORDER BY date DESC",(ws,we,user["id"])).fetchall()
+    conn.close()
+    return build_pdf(user, [dict(r) for r in rows], f"Week: {ws} to {we}", f"week-{date}")
+
+
+@router.get("/api/export/pdf/year/{year}")
+def export_yearly(year: int, authorization: Optional[str] = Header(None)):
+    user = verify_token(authorization)
+    conn = get_db()
+    is_admin = user["role"]=="admin"
+    if is_admin:
+        rows = conn.execute("SELECT * FROM expenses WHERE strftime('%Y',date)=? ORDER BY date DESC",(str(year),)).fetchall()
+        budget = conn.execute("SELECT COALESCE(SUM(amount),0) FROM user_budgets WHERE month LIKE ?",(f"{year}-%",)).fetchone()[0]
+    else:
+        rows = conn.execute("SELECT * FROM expenses WHERE strftime('%Y',date)=? AND user_id=? ORDER BY date DESC",(str(year),user["id"])).fetchall()
+        budget = conn.execute("SELECT COALESCE(SUM(amount),0) FROM user_budgets WHERE user_id=? AND month LIKE ?",(user["id"],f"{year}-%")).fetchone()[0] or 0
+    conn.close()
+    return build_pdf(user, [dict(r) for r in rows], f"Year {year}", f"year-{year}", budget)
